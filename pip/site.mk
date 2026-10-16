@@ -2,7 +2,9 @@
 NAAYA_PIP := $(dir $(lastword $(MAKEFILE_LIST)))
 PYTHON ?= python3.12
 FIND_LINKS ?= https://eggshop.eaudeweb.ro
-NAAYA_PIP_CMD = $(PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg
+# The generator runs with an existing venv Python; PYTHON is needed only to create the venv
+GEN_PYTHON = $(firstword $(wildcard .venv/bin/python .venv-*/bin/python) $(PYTHON))
+NAAYA_PIP_CMD = $(GEN_PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg
 
 .PHONY: install requirements packages config haproxy
 
