@@ -1,0 +1,9 @@
+<configure xmlns="http://namespaces.zope.org/zope">
+
+<!-- Disable plone.protect CSRF auto-protection (not needed for Naaya) -->
+<adapter
+    factory="Products.NaayaCore.nocsrf.NoOpTransform"
+    name="plone.protect.autocsrf"
+    />
+
+</configure>
