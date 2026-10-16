@@ -67,8 +67,9 @@ def instances(cfg):
             # ZEO clients use the [zeoserver] address and blobs unless set
             if opts.get('storage') == 'zeo' or opts.get('temporary-storage') == 'zeo':
                 opts.setdefault('zeo-address', zeo['zeo-address'])
-                if 'blob-storage' not in cfg[section] and 'blob-storage' not in cfg['site']:
-                    opts['blob-storage'] = zeo['blob-storage']
+                for key in ('file-storage', 'blob-storage'):
+                    if key not in cfg[section] and key not in cfg['site']:
+                        opts[key] = zeo[key]
             result.append((name, opts))
     return result
 
@@ -254,6 +255,12 @@ def config(cfg):
             debug_mode=opts.get('debug-mode', 'off'),
             environment=indent(environment),
             main_db=main_db(opts), temporary_db=temporary_db(opts),
+            additional=opts.get('zope-conf-additional', '')).rstrip()])
+        # migrate.mk opens Data.fs directly, without ZEO and the temporary database
+        write(os.path.join(etc, 'zope-migrate.conf'), [render(
+            'zope.conf', instance_home=home, client_home=opts['client-home'],
+            debug_mode='off', environment=indent(environment),
+            main_db=main_db(dict(opts, storage='file')), temporary_db='',
             additional=opts.get('zope-conf-additional', '')).rstrip()])
         write(os.path.join(etc, 'wsgi.ini'), [render(
             'wsgi.ini', http_address=listen_address(opts['http-address']),
