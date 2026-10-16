@@ -825,13 +825,6 @@ if dry_run:
 else:
     if not reindex_only:
         print("\nCommitting transaction...")
-        # Two connections to one ZEO storage in a transaction hang tpc_begin; show them
-        for resource in transaction.get()._resources:
-            db = getattr(resource, 'db', lambda: None)()
-            changed = [type(ob).__name__ for ob in getattr(resource, '_registered_objects', [])]
-            print("  %r db=%s main=%s changed=%d %s" % (
-                resource, getattr(db, 'database_name', '?'),
-                resource is app._p_jar, len(changed), changed[:5]))
         transaction.commit()
     print("\nRebuilding catalogs...")
     reindex_catalogs(app)
