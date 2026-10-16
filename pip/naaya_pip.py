@@ -254,7 +254,6 @@ def config(cfg):
             debug_mode=opts.get('debug-mode', 'off'),
             environment=indent(environment),
             main_db=main_db(opts), temporary_db=temporary_db(opts),
-            products='\n'.join('products %s' % p for p in split(opts.get('products', ''))),
             additional=opts.get('zope-conf-additional', '')).rstrip()])
         write(os.path.join(etc, 'wsgi.ini'), [render(
             'wsgi.ini', http_address=listen_address(opts['http-address']),
@@ -268,14 +267,12 @@ def config(cfg):
                          split(opts.get('zcml', '')), opts.get('zcml-additional', ''))
         write_script(os.path.join(root, 'bin', name),
                      render('instance.sh', name=name, root=root, etc=etc, venv=venv))
-        # migrate.mk runs parts/<instance>/bin/interpreter
+        # migrate.mk runs parts/<instance>/bin/interpreter; a symlink would not find pyvenv.cfg
         interpreter = os.path.join(home, 'bin', 'interpreter')
-        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
         if os.path.lexists(interpreter):
             os.remove(interpreter)
-        os.symlink(os.path.join(venv, 'bin', 'python'), interpreter)
+        write_script(interpreter, '#!/bin/sh\nexec %s/bin/python "$@"' % venv)
         paths = [log_dir, opts['client-home'], os.path.join(root, 'var', 'cache')]
-        paths += split(opts.get('products', ''))
         if opts.get('storage', 'file') != 'zeo':
             paths += [os.path.dirname(opts['file-storage']), opts['blob-storage']]
         for path in paths:
