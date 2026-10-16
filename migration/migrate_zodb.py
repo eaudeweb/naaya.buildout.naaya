@@ -35,6 +35,28 @@ import transaction
 from Acquisition import aq_base
 from Testing.makerequest import makerequest
 
+
+def _patch_normalizeargs():
+    """Skip the broken Python 2 __provides__ entries instead of failing to load the object."""
+    import zope.interface.declarations as zid
+
+    def normalizeargs(sequence, output=None):
+        if output is None:
+            output = []
+        if zid.InterfaceClass in type(sequence).__mro__ or zid.Implements in type(sequence).__mro__:
+            output.append(sequence)
+        else:
+            try:
+                for v in sequence:
+                    normalizeargs(v, output)
+            except TypeError:
+                pass
+        return output
+    zid._normalizeargs = normalizeargs
+
+
+_patch_normalizeargs()
+
 app = makerequest(app)  # noqa: F821
 
 dry_run = '--dry-run' in sys.argv

@@ -5,8 +5,8 @@ After a Python 2 -> Python 3 migration, pickled __provides__ attributes
 may reference old-style classes (ExtensionClass) that zope.interface can't
 handle. The declaration is rebuilt with only the marker interfaces (e.g. ISite).
 
-Requires the patched zope.interface._normalizeargs (try/except TypeError)
-so that objects with broken __provides__ can actually be loaded.
+Patches zope.interface._normalizeargs so that objects with broken __provides__
+can be loaded (buildout did it in the instance script initialization).
 
 Usage:
     parts/circa/bin/interpreter fix_provides.py
@@ -20,6 +20,28 @@ from ZODB.serialize import ObjectWriter
 from ZODB.utils import u64
 from zope.interface import alsoProvides, directlyProvidedBy, implementedBy
 from zope.interface.interface import InterfaceClass
+
+
+def _patch_normalizeargs():
+    """Skip the broken Python 2 __provides__ entries instead of failing to load the object."""
+    import zope.interface.declarations as zid
+
+    def normalizeargs(sequence, output=None):
+        if output is None:
+            output = []
+        if zid.InterfaceClass in type(sequence).__mro__ or zid.Implements in type(sequence).__mro__:
+            output.append(sequence)
+        else:
+            try:
+                for v in sequence:
+                    normalizeargs(v, output)
+            except TypeError:
+                pass
+        return output
+    zid._normalizeargs = normalizeargs
+
+
+_patch_normalizeargs()
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
