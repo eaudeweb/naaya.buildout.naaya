@@ -1,6 +1,6 @@
 """Generate pip requirements and Zope instance files for a Naaya site.
 
-Usage: naaya_pip.py SITE_CFG requirements|config
+Usage: naaya_pip.py SITE_CFG requirements|venvs|config
 """
 import configparser
 import os
@@ -8,9 +8,12 @@ import re
 import stat
 import sys
 
+from make_constraints import collect
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES = os.path.join(HERE, 'templates')
 BASE_CFG = os.path.join(os.path.dirname(HERE), 'base.cfg')
+VERSIONS_CFG = os.path.join(os.path.dirname(HERE), 'zope6-versions.cfg')
 # Installed on every site, on top of the eggs lists
 ALWAYS = ['Zope[wsgi]', 'ZEO', 'zdaemon']
 
@@ -36,6 +39,24 @@ def read_site(path):
     return cfg
 
 
+def instances(cfg):
+    """(name, options) per [instance:NAME]; instance options override [site]."""
+    result = []
+    for section in cfg.sections():
+        if section.startswith('instance:'):
+            opts = dict(cfg['site'])
+            opts.update(cfg[section])
+            opts.setdefault('venv', '.venv')
+            result.append((section.split(':', 1)[1], opts))
+    return result
+
+
+def venv_files(venv):
+    """requirements.txt for .venv, requirements-circa.txt for .venv-circa."""
+    suffix = venv[len('.venv'):] if venv.startswith('.venv') else '-' + venv
+    return 'requirements%s.txt' % suffix, 'constraints%s.txt' % suffix
+
+
 def project_name(src):
     """Project name from setup.py, or the directory name."""
     setup = os.path.join(src, 'setup.py')
@@ -50,31 +71,90 @@ def project_name(src):
     return os.path.basename(src.rstrip('/'))
 
 
+def requires(src):
+    """Requirement names of a source package, from its egg-info or setup.py."""
+    for entry in os.listdir(src):
+        path = os.path.join(src, entry, 'requires.txt')
+        if entry.endswith('.egg-info') and os.path.exists(path):
+            lines = open(path, encoding='utf-8').read().split('\n[')[0]
+            return [req_name(line) for line in split(lines)]
+    text = open(os.path.join(src, 'setup.py'), encoding='utf-8').read()
+    m = re.search(r'install_requires\s*=\s*\[(.*?)\]', text, re.S)
+    if not m:
+        return []
+    return [req_name(r) for r in re.findall(r"""['"]([^'"]+)['"]""", m.group(1))]
+
+
+def req_name(requirement):
+    return norm(re.split(r'[\[<>=!~ ;]', requirement.strip())[0])
+
+
 def norm(name):
     return re.sub(r'[-_.]+', '-', name).lower()
 
 
+def used_develop(develop, eggs):
+    """Source packages reached from eggs through install_requires, as buildout does."""
+    sources = {norm(project_name(src)): src for src in develop}
+    todo = [req_name(egg) for egg in eggs]
+    seen = set()
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        if name in sources:
+            todo.extend(requires(sources[name]))
+    return [src for name, src in sources.items() if name in seen]
+
+
+def venvs(cfg):
+    """Eggs and source packages for each venv of the site."""
+    result = {}
+    for name, opts in instances(cfg):
+        eggs = result.setdefault(opts['venv'], {'eggs': list(ALWAYS), 'opts': opts})['eggs']
+        eggs.extend(e for e in split(opts.get('eggs', '')) if e not in eggs)
+    for venv, data in result.items():
+        data['develop'] = used_develop(split(data['opts'].get('develop', '')), data['eggs'])
+    return result
+
+
 def requirements(cfg):
-    site = cfg['site']
-    develop = split(site.get('develop', ''))
-    names = {norm(project_name(src)) for src in develop}
-    # compat puts the source directory on sys.path, as buildout develop eggs;
-    # extend_path namespaces such as Products.NaayaContent need that
-    lines = ['-e %s --config-settings editable_mode=compat' % src
-             for src in develop]
-    for egg in ALWAYS + split(site.get('eggs', '')):
-        if norm(re.split(r'[\[<>=]', egg)[0]) not in names:
-            lines.append(egg)
-    write(os.path.join(site['directory'], 'requirements.txt'), lines)
-    # Packages installed from source must not be pinned
-    skip = ' '.join('--skip %s' % project_name(src) for src in develop)
-    sys.stdout.write(skip + '\n')
+    root = cfg['site']['directory']
+    versions_cfgs = split(cfg['site'].get('versions', VERSIONS_CFG))
+    for venv, data in venvs(cfg).items():
+        requirements_txt, constraints_txt = venv_files(venv)
+        names = {norm(project_name(src)) for src in data['develop']}
+        # compat puts the source directory on sys.path, as buildout develop eggs;
+        # extend_path namespaces such as Products.NaayaContent need that
+        lines = ['-e %s --config-settings editable_mode=compat' % src
+                 for src in data['develop']]
+        lines += [egg for egg in data['eggs'] if req_name(egg) not in names]
+        write(os.path.join(root, requirements_txt), lines)
+        versions = {}
+        for versions_cfg in versions_cfgs:
+            collect(versions_cfg, versions)
+        # Packages installed from source must not be pinned; an empty pin unpins
+        write(os.path.join(root, constraints_txt),
+              ['%s==%s' % (name, version) for key, (name, version) in sorted(versions.items())
+               if version and norm(key) not in names])
+        sys.stdout.write('Wrote %s and %s\n' % (requirements_txt, constraints_txt))
+
+
+def print_venvs(cfg):
+    for venv in venvs(cfg):
+        sys.stdout.write('%s %s %s\n' % ((venv,) + venv_files(venv)))
 
 
 def write(path, lines):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')
+
+
+def write_script(path, text):
+    write(path, [text.rstrip()])
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP)
 
 
 def render(template, **values):
@@ -136,11 +216,9 @@ def listen_address(address):
 
 def config(cfg):
     root = cfg['site']['directory']
-    instances = [s.split(':', 1)[1] for s in cfg.sections()
-                 if s.startswith('instance:')]
-    for name in instances:
-        opts = dict(cfg['site'])
-        opts.update(cfg['instance:%s' % name])
+    nytest = []
+    for name, opts in instances(cfg):
+        venv = os.path.join(root, opts['venv'])
         home = os.path.join(root, 'parts', name)
         etc = os.path.join(home, 'etc')
         log_dir = opts.get('log-directory', os.path.join(root, 'var', 'log'))
@@ -162,37 +240,37 @@ def config(cfg):
         write(os.path.join(etc, 'site.zcml'), [render('site.zcml').rstrip()])
         package_includes(os.path.join(etc, 'package-includes'),
                          split(opts.get('zcml', '')), opts.get('zcml-additional', ''))
-        script = os.path.join(root, 'bin', name)
-        write(script, [render('instance.sh', name=name, root=root, etc=etc).rstrip()])
-        os.chmod(script, os.stat(script).st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        write_script(os.path.join(root, 'bin', name),
+                     render('instance.sh', name=name, root=root, etc=etc, venv=venv))
         # migrate.mk runs parts/<instance>/bin/interpreter
         interpreter = os.path.join(home, 'bin', 'interpreter')
         os.makedirs(os.path.dirname(interpreter), exist_ok=True)
         if os.path.lexists(interpreter):
             os.remove(interpreter)
-        os.symlink(os.path.join(root, '.venv', 'bin', 'python'), interpreter)
+        os.symlink(os.path.join(venv, 'bin', 'python'), interpreter)
         for path in (log_dir, os.path.join(root, 'var', name),
                      os.path.join(root, 'var', 'cache')):
             os.makedirs(path, exist_ok=True)
         sys.stdout.write('Wrote %s and bin/%s\n' % (etc, name))
-    # [scripts] name = module:function(arguments), as zc.recipe.egg scripts
-    if cfg.has_section('scripts'):
-        for name, entry in cfg['scripts'].items():
-            module, call = entry.strip().split(':', 1)
-            script = os.path.join(root, 'bin', name)
-            write(script, [render('script.py', root=root, module=module,
-                                  call=call).rstrip()])
-            os.chmod(script, os.stat(script).st_mode | stat.S_IXUSR | stat.S_IXGRP)
-            sys.stdout.write('Wrote bin/%s\n' % name)
-    if os.path.exists(os.path.join(root, '.venv', 'bin', 'nytest')):
-        script = os.path.join(root, 'bin', 'nytest')
-        write(script, [render('nytest.py', root=root).rstrip()])
-        os.chmod(script, os.stat(script).st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        # scripts: one "name = module:function(arguments)" per line
+        for line in split(opts.get('scripts', '')):
+            script, entry = [part.strip() for part in line.split('=', 1)]
+            module, call = entry.split(':', 1)
+            write_script(os.path.join(root, 'bin', script),
+                         render('script.py', venv=venv, module=module, call=call))
+            sys.stdout.write('Wrote bin/%s\n' % script)
+        if os.path.exists(os.path.join(venv, 'bin', 'nytest')):
+            nytest.append('    %s) PY=%s/bin/python ;;' % (name, venv))
+    if nytest:
+        write(os.path.join(root, 'bin', 'nytest.py'), [render('nytest.py').rstrip()])
+        write_script(os.path.join(root, 'bin', 'nytest'),
+                     render('nytest.sh', root=root, cases='\n'.join(nytest)))
 
 
 def main():
     cfg = read_site(sys.argv[1])
-    {'requirements': requirements, 'config': config}[sys.argv[2]](cfg)
+    {'requirements': requirements, 'venvs': print_venvs,
+     'config': config}[sys.argv[2]](cfg)
 
 
 if __name__ == '__main__':

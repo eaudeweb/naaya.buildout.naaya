@@ -1,6 +1,6 @@
 #!/bin/sh
 # Zope instance {name}: start|stop|restart|status|fg|debug|run SCRIPT [ARGS]
-VENV={root}/.venv/bin
+VENV={venv}/bin
 ETC={etc}
 SOCKET={root}/var/{name}.zdsock
 case "$1" in

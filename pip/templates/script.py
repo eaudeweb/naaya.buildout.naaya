@@ -1,4 +1,4 @@
-#!{root}/.venv/bin/python
+#!{venv}/bin/python
 import sys
 
 import {module}

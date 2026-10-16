@@ -1,5 +1,4 @@
-#!{root}/.venv/bin/python
-# Run the Naaya tests for an instance: bin/nytest INSTANCE [zope.testrunner options]
+# Started by bin/nytest with the venv of the instance; naaya-nose finds the root from this path
 import sys
 
 import naaya_nose

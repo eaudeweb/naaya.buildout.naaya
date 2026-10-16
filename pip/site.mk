@@ -1,27 +1,25 @@
 # Shared pip targets for a Naaya site; include it from the site Makefile next to site.cfg
 NAAYA_PIP := $(dir $(lastword $(MAKEFILE_LIST)))
 PYTHON ?= python3.12
-VERSIONS ?= $(NAAYA_PIP)../zope6-versions.cfg
 FIND_LINKS ?= https://eggshop.eaudeweb.ro
-PIP := .venv/bin/pip
+NAAYA_PIP_CMD = $(PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg
 
-.PHONY: install venv requirements packages config
+.PHONY: install requirements packages config
 
-install: venv requirements packages config
+install: requirements packages config
 
-venv:
-	test -x .venv/bin/python || $(PYTHON) -m venv .venv
-	$(PIP) install -q --upgrade pip setuptools==81.0.0 wheel
-
-# Packages installed with -e are left out of constraints.txt
+# One venv per distinct "venv" option of the instances, .venv by default
 requirements:
-	SKIP=$$($(PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg requirements) && \
-	$(PYTHON) $(NAAYA_PIP)make_constraints.py $(VERSIONS) $$SKIP > constraints.txt
+	$(NAAYA_PIP_CMD) requirements
 
 # Old setup.py files need setuptools 81 (pkg_resources), so no build isolation
 packages:
-	$(PIP) install --no-build-isolation \
-	    -f $(FIND_LINKS) -c constraints.txt -r requirements.txt
+	$(NAAYA_PIP_CMD) venvs | while read venv requirements constraints; do \
+	    test -x $$venv/bin/python || $(PYTHON) -m venv $$venv || exit 1; \
+	    $$venv/bin/pip install -q --upgrade pip setuptools==81.0.0 wheel || exit 1; \
+	    $$venv/bin/pip install --no-build-isolation -f $(FIND_LINKS) \
+	        -c $$constraints -r $$requirements || exit 1; \
+	done
 
 config:
-	$(PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg config
+	$(NAAYA_PIP_CMD) config
