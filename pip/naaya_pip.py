@@ -35,19 +35,41 @@ def read_site(path):
                     'zcml': base.get('naaya', 'zcml')}
     root = os.path.dirname(os.path.abspath(path))
     cfg['site'] = {'directory': root, 'naaya-buildout': os.path.dirname(HERE)}
-    cfg.read(path, encoding='utf-8')
+    # secret.cfg next to SITE_CFG holds [secrets], as in the buildouts
+    cfg.read([path, os.path.join(root, 'secret.cfg')], encoding='utf-8')
     return cfg
+
+
+def zeoserver_options(cfg):
+    """[zeoserver] options with the standard paths under var/ as defaults."""
+    var = os.path.join(cfg['site']['directory'], 'var')
+    opts = {'zeo-address': os.path.join(var, 'zeo.socket'),
+            'file-storage': os.path.join(var, 'filestorage', 'Data.fs'),
+            'blob-storage': os.path.join(var, 'blobstorage')}
+    opts.update(cfg['zeoserver'] if cfg.has_section('zeoserver') else {})
+    return opts
 
 
 def instances(cfg):
     """(name, options) per [instance:NAME]; instance options override [site]."""
+    var = os.path.join(cfg['site']['directory'], 'var')
+    zeo = zeoserver_options(cfg)
     result = []
     for section in cfg.sections():
         if section.startswith('instance:'):
-            opts = dict(cfg['site'])
+            name = section.split(':', 1)[1]
+            opts = {'venv': '.venv',
+                    'client-home': os.path.join(var, name),
+                    'file-storage': os.path.join(var, 'filestorage', 'Data.fs'),
+                    'blob-storage': os.path.join(var, 'blobstorage')}
+            opts.update(cfg['site'])
             opts.update(cfg[section])
-            opts.setdefault('venv', '.venv')
-            result.append((section.split(':', 1)[1], opts))
+            # ZEO clients use the [zeoserver] address and blobs unless set
+            if opts.get('storage') == 'zeo' or opts.get('temporary-storage') == 'zeo':
+                opts.setdefault('zeo-address', zeo['zeo-address'])
+                if 'blob-storage' not in cfg[section] and 'blob-storage' not in cfg['site']:
+                    opts['blob-storage'] = zeo['blob-storage']
+            result.append((name, opts))
     return result
 
 
@@ -222,14 +244,17 @@ def config(cfg):
         home = os.path.join(root, 'parts', name)
         etc = os.path.join(home, 'etc')
         log_dir = opts.get('log-directory', os.path.join(root, 'var', 'log'))
+        # A variable without a value (an empty secret) is left out
         environment = '\n'.join(
-            ' '.join(line.split(None, 1)) for line in split(opts.get('environment', '')))
+            ' '.join(line.split(None, 1)) for line in split(opts.get('environment', ''))
+            if len(line.split(None, 1)) == 2)
         write(os.path.join(etc, 'zope.conf'), [render(
             'zope.conf', instance_home=home,
-            client_home=opts.get('client-home', os.path.join(root, 'var', name)),
+            client_home=opts['client-home'],
             debug_mode=opts.get('debug-mode', 'off'),
             environment=indent(environment),
             main_db=main_db(opts), temporary_db=temporary_db(opts),
+            products='\n'.join('products %s' % p for p in split(opts.get('products', ''))),
             additional=opts.get('zope-conf-additional', '')).rstrip()])
         write(os.path.join(etc, 'wsgi.ini'), [render(
             'wsgi.ini', http_address=listen_address(opts['http-address']),
@@ -249,8 +274,11 @@ def config(cfg):
         if os.path.lexists(interpreter):
             os.remove(interpreter)
         os.symlink(os.path.join(venv, 'bin', 'python'), interpreter)
-        for path in (log_dir, os.path.join(root, 'var', name),
-                     os.path.join(root, 'var', 'cache')):
+        paths = [log_dir, opts['client-home'], os.path.join(root, 'var', 'cache')]
+        paths += split(opts.get('products', ''))
+        if opts.get('storage', 'file') != 'zeo':
+            paths += [os.path.dirname(opts['file-storage']), opts['blob-storage']]
+        for path in paths:
             os.makedirs(path, exist_ok=True)
         sys.stdout.write('Wrote %s and bin/%s\n' % (etc, name))
         # scripts: one "name = module:function(arguments)" per line
@@ -267,7 +295,7 @@ def config(cfg):
         write_script(os.path.join(root, 'bin', 'nytest'),
                      render('nytest.sh', root=root, cases='\n'.join(nytest)))
     if cfg.has_section('zeoserver'):
-        zeoserver(root, cfg['zeoserver'])
+        zeoserver(root, zeoserver_options(cfg))
     if cfg.has_section('haproxy'):
         haproxy_config(root, cfg['haproxy'])
 
@@ -307,7 +335,8 @@ def zeoserver(root, opts):
     write_script(os.path.join(root, 'bin', 'zeopack'),
                  render('zeopack.sh', venv=venv, server=server,
                         pack_days=opts.get('pack-days', '7')))
-    os.makedirs(log_dir, exist_ok=True)
+    for path in (log_dir, os.path.dirname(opts['file-storage']), opts['blob-storage']):
+        os.makedirs(path, exist_ok=True)
     sys.stdout.write('Wrote %s, bin/zeoserver and bin/zeopack\n' % etc)
 
 
