@@ -1,6 +1,6 @@
 """Generate pip requirements and Zope instance files for a Naaya site.
 
-Usage: naaya_pip.py SITE_CFG requirements|venvs|config
+Usage: naaya_pip.py SITE_CFG requirements|venvs|config|haproxy-version
 """
 import configparser
 import os
@@ -234,6 +234,7 @@ def config(cfg):
         write(os.path.join(etc, 'wsgi.ini'), [render(
             'wsgi.ini', http_address=listen_address(opts['http-address']),
             threads=opts.get('threads', '4'), zope_conf=os.path.join(etc, 'zope.conf'),
+            access_log_level=opts.get('access-log-level', 'INFO'),
             event_log=opts.get('event-log', os.path.join(log_dir, name + '.log')),
             access_log=opts.get('access-log',
                                 os.path.join(log_dir, name + '-access.log'))).rstrip()])
@@ -265,12 +266,55 @@ def config(cfg):
         write(os.path.join(root, 'bin', 'nytest.py'), [render('nytest.py').rstrip()])
         write_script(os.path.join(root, 'bin', 'nytest'),
                      render('nytest.sh', root=root, cases='\n'.join(nytest)))
+    if cfg.has_section('zeoserver'):
+        zeoserver(root, cfg['zeoserver'])
+    if cfg.has_section('haproxy'):
+        haproxy_config(root, cfg['haproxy'])
+
+
+def haproxy_config(root, opts):
+    """haproxy.cfg from the haproxy.tpl shared with buildout."""
+    with open(os.path.join(os.path.dirname(HERE), 'haproxy.tpl'), encoding='utf-8') as f:
+        text = f.read()
+    text = re.sub(r'\$\{([\w-]+)\}', lambda m: opts[m.group(1)].strip(), text)
+    write(os.path.join(root, 'haproxy.cfg'), [text.rstrip()])
+    sys.stdout.write('Wrote haproxy.cfg\n')
+
+
+def haproxy_version(cfg):
+    """Print the haproxy version and sha256 pinned in base.cfg [haproxy-build]."""
+    base = configparser.ConfigParser(interpolation=None, strict=False)
+    base.read(BASE_CFG, encoding='utf-8')
+    sys.stdout.write('%s %s\n' % (base.get('haproxy-build', 'version'),
+                                  base.get('haproxy-build', 'sha256')))
+
+
+def zeoserver(root, opts):
+    """parts/zeoserver/etc/zeo.conf, bin/zeoserver and bin/zeopack."""
+    venv = os.path.join(root, opts.get('venv', '.venv'))
+    etc = os.path.join(root, 'parts', 'zeoserver', 'etc')
+    address = opts['zeo-address']
+    log_dir = opts.get('log-directory', os.path.join(root, 'var', 'log'))
+    write(os.path.join(etc, 'zeo.conf'), [render(
+        'zeo.conf', zeo_address=address,
+        pid_file=os.path.join(root, 'var', 'zeoserver.pid'),
+        file_storage=opts['file-storage'], blob_dir=opts['blob-storage'],
+        event_log=opts.get('event-log', os.path.join(log_dir, 'zeoserver.log'))).rstrip()])
+    write_script(os.path.join(root, 'bin', 'zeoserver'),
+                 render('zeoserver.sh', venv=venv, etc=etc, root=root))
+    # zeopack takes a unix socket with -u, a host:port as argument
+    server = address if ':' in address else '-u ' + address
+    write_script(os.path.join(root, 'bin', 'zeopack'),
+                 render('zeopack.sh', venv=venv, server=server,
+                        pack_days=opts.get('pack-days', '7')))
+    os.makedirs(log_dir, exist_ok=True)
+    sys.stdout.write('Wrote %s, bin/zeoserver and bin/zeopack\n' % etc)
 
 
 def main():
     cfg = read_site(sys.argv[1])
-    {'requirements': requirements, 'venvs': print_venvs,
-     'config': config}[sys.argv[2]](cfg)
+    {'requirements': requirements, 'venvs': print_venvs, 'config': config,
+     'haproxy-version': haproxy_version}[sys.argv[2]](cfg)
 
 
 if __name__ == '__main__':

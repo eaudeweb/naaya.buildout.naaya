@@ -4,7 +4,7 @@ PYTHON ?= python3.12
 FIND_LINKS ?= https://eggshop.eaudeweb.ro
 NAAYA_PIP_CMD = $(PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg
 
-.PHONY: install requirements packages config
+.PHONY: install requirements packages config haproxy
 
 install: requirements packages config
 
@@ -23,3 +23,15 @@ packages:
 
 config:
 	$(NAAYA_PIP_CMD) config
+
+# haproxy built from source into bin/haproxy; skipped when that version is already there
+haproxy:
+	set -e; set -- $$($(NAAYA_PIP_CMD) haproxy-version); version=$$1; sha256=$$2; \
+	if bin/haproxy -v 2>/dev/null | grep -q "version $$version[- ]"; then exit 0; fi; \
+	build=parts/haproxy-build; rm -rf $$build && mkdir -p $$build bin; \
+	curl -fsSL -o $$build/haproxy.tar.gz \
+	    https://www.haproxy.org/download/$${version%.*}/src/haproxy-$$version.tar.gz; \
+	echo "$$sha256  $$build/haproxy.tar.gz" | sha256sum -c -; \
+	tar xzf $$build/haproxy.tar.gz -C $$build; \
+	make -C $$build/haproxy-$$version -j$$(nproc) TARGET=linux-glibc; \
+	install -m 755 $$build/haproxy-$$version/haproxy bin/haproxy
