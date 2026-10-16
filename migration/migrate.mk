@@ -18,8 +18,13 @@ migrate:
 	@echo "[Step 2/3] fix_provides"
 	parts/$(INSTANCE)/bin/interpreter $(MIGRATION)fix_provides.py "$(DATAFS)"
 	@echo "[Step 3/3] Zope-level fixes"
-	@# ZEO client instances need the zeoserver running only for this step
-	@ZEO=$$(grep -q '<zeoclient>' parts/$(INSTANCE)/etc/zope.conf && test -x bin/zeoserver && echo yes); \
+	@# pip installs write zope-migrate.conf: Data.fs opened directly, no ZEO and no temporary database
+	@if [ -f parts/$(INSTANCE)/etc/zope-migrate.conf ]; then \
+	    parts/$(INSTANCE)/bin/interpreter -m Zope2.utilities.zconsole run \
+	        parts/$(INSTANCE)/etc/zope-migrate.conf $(MIGRATION)migrate_zodb.py; \
+	    exit $$?; \
+	fi; \
+	ZEO=$$(grep -q '<zeoclient>' parts/$(INSTANCE)/etc/zope.conf && test -x bin/zeoserver && echo yes); \
 	if [ -n "$$ZEO" ]; then bin/zeoserver start; fi; \
 	bin/$(INSTANCE) run $(MIGRATION)migrate_zodb.py; STATUS=$$?; \
 	if [ -n "$$ZEO" ]; then bin/zeoserver stop; fi; \
