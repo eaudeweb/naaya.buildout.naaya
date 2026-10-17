@@ -35,8 +35,9 @@ def read_site(path):
                     'zcml': base.get('naaya', 'zcml')}
     root = os.path.dirname(os.path.abspath(path))
     cfg['site'] = {'directory': root, 'naaya-buildout': os.path.dirname(HERE)}
-    # secret.cfg next to SITE_CFG holds [secrets], as in the buildouts
-    cfg.read([path, os.path.join(root, 'secret.cfg')], encoding='utf-8')
+    # secret.cfg holds [secrets], as in the buildouts; local.cfg overrides options per server
+    cfg.read([path, os.path.join(root, 'secret.cfg'), os.path.join(root, 'local.cfg')],
+             encoding='utf-8')
     return cfg
 
 
