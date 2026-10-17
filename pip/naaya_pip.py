@@ -1,6 +1,6 @@
 """Generate pip requirements and Zope instance files for a Naaya site.
 
-Usage: naaya_pip.py SITE_CFG requirements|venvs|config|haproxy-version
+Usage: naaya_pip.py SITE_CFG requirements|venvs|config|haproxy-version|test-command INSTANCE
 """
 import configparser
 import os
@@ -239,7 +239,6 @@ def listen_address(address):
 
 def config(cfg):
     root = cfg['site']['directory']
-    nytest = []
     for name, opts in instances(cfg):
         venv = os.path.join(root, opts['venv'])
         home = os.path.join(root, 'parts', name)
@@ -292,12 +291,6 @@ def config(cfg):
             write_script(os.path.join(root, 'bin', script),
                          render('script.py', venv=venv, module=module, call=call))
             sys.stdout.write('Wrote bin/%s\n' % script)
-        if os.path.exists(os.path.join(venv, 'bin', 'nytest')):
-            nytest.append('    %s) PY=%s/bin/python ;;' % (name, venv))
-    if nytest:
-        write(os.path.join(root, 'bin', 'nytest.py'), [render('nytest.py').rstrip()])
-        write_script(os.path.join(root, 'bin', 'nytest'),
-                     render('nytest.sh', root=root, cases='\n'.join(nytest)))
     if cfg.has_section('zeoserver'):
         zeoserver(root, zeoserver_options(cfg))
     if cfg.has_section('haproxy'):
@@ -344,8 +337,24 @@ def zeoserver(root, opts):
     sys.stdout.write('Wrote %s, bin/zeoserver and bin/zeopack\n' % etc)
 
 
+def test_command(cfg, instance):
+    """naaya-testrunner for an instance, on the src/ packages installed in its venv."""
+    root = cfg['site']['directory']
+    opts = dict(instances(cfg))[instance]
+    installed = {os.path.realpath(src) for src in venvs(cfg)[opts['venv']]['develop']}
+    src_dir = os.path.join(root, 'src')
+    paths = [os.path.join(src_dir, name) for name in sorted(os.listdir(src_dir))
+             if os.path.realpath(os.path.join(src_dir, name)) in installed]
+    sys.stdout.write('env NAAYA_ZOPE_CONF=%s %s %s\n' % (
+        os.path.join(root, 'parts', instance, 'etc', 'zope.conf'),
+        os.path.join(root, opts['venv'], 'bin', 'naaya-testrunner'),
+        ' '.join('--test-path %s' % path for path in paths)))
+
+
 def main():
     cfg = read_site(sys.argv[1])
+    if sys.argv[2] == 'test-command':
+        return test_command(cfg, sys.argv[3])
     {'requirements': requirements, 'venvs': print_venvs, 'config': config,
      'haproxy-version': haproxy_version}[sys.argv[2]](cfg)
 

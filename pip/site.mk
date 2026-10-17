@@ -6,7 +6,7 @@ FIND_LINKS ?= https://eggshop.eaudeweb.ro
 GEN_PYTHON = $(firstword $(wildcard .venv/bin/python .venv-*/bin/python) $(PYTHON))
 NAAYA_PIP_CMD = $(GEN_PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg
 
-.PHONY: install requirements packages config haproxy
+.PHONY: install requirements packages config haproxy test
 
 install: requirements packages config
 
@@ -37,3 +37,9 @@ haproxy:
 	tar xzf $$build/haproxy.tar.gz -C $$build; \
 	make -C $$build/haproxy-$$version -j$$(nproc) TARGET=linux-glibc; \
 	install -m 755 $$build/haproxy-$$version/haproxy bin/haproxy
+
+# Tests of the src/ packages: make test INSTANCE=<name> [TEST_ARGS="-t pattern"]
+TEST_ARGS ?= -p
+test:
+	@test -n "$(INSTANCE)" || { echo "Usage: make test INSTANCE=<name> [TEST_ARGS=...]" >&2; exit 1; }
+	$$($(NAAYA_PIP_CMD) test-command $(INSTANCE)) $(TEST_ARGS)
