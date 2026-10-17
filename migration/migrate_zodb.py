@@ -22,6 +22,8 @@ Steps:
   13. Replace rstk.name with rstk['name'] in stored templates and scripts
   14. Render error_value escaped with str() in stored error templates and DTML
   15. Remove .decode('utf-8') on request values in stored PythonScripts
+  16. Replace test() in the root gw_macro with conditional expressions
+  17. Set a 15 s op_timeout on LDAPUserFolder servers that have none
 
 After the commit every catalog is rebuilt (one commit per catalog), then the
 database is packed. '--reindex-only' skips the steps and only rebuilds and packs.
@@ -789,6 +791,73 @@ def reindex_catalogs(app):
         app._p_jar.cacheMinimize()
 
 
+# Five (zope.tales) has no test(); root gw_macro is rendered by groupware browser views
+GW_MACRO_REPLACEMENTS = [
+    ("python:test(user_full_name == 'Anonymous User', None, "
+     "'https://www.eionet.europa.eu/directory/user?uid='+uid)",
+     "python:None if user_full_name == 'Anonymous User' else "
+     "'https://www.eionet.europa.eu/directory/user?uid='+uid"),
+    ("python:test(repeat['crumb'].end, 'breadcrumbitemlast', 'breadcrumbitem')",
+     "python:'breadcrumbitemlast' if repeat['crumb'].end else 'breadcrumbitem'"),
+]
+
+
+def step_gw_macro_test(app):
+    """Replace test() in the root gw_macro with conditional expressions."""
+    from Products.PageTemplates.PageTemplate import PageTemplate
+    template = app._getOb('gw_macro', None)
+    if not isinstance(template, PageTemplate):
+        print("  No root gw_macro")
+        return
+    text = template._text
+    for old, new in GW_MACRO_REPLACEMENTS:
+        text = text.replace(old, new)
+    if text == template._text:
+        print("  gw_macro has no test() to replace")
+        return
+    template.pt_edit(text, template.content_type)
+    print("  gw_macro")
+
+
+# A search to an LDAP server that never answers blocks the Zope thread for good
+LDAP_OP_TIMEOUT = 15
+
+
+def set_ldap_op_timeout(luf, timeout=LDAP_OP_TIMEOUT):
+    """Set op_timeout on the servers of luf without one; return the changed servers."""
+    delegate = luf._delegate
+    changed = []
+    for server in delegate.getServers():
+        try:
+            current = int(server.get('op_timeout', -1))
+        except (TypeError, ValueError):
+            current = -1
+        # LDAPDelegate sets the timeout only when op_timeout > 0
+        if current <= 0:
+            server['op_timeout'] = timeout
+            changed.append(server)
+    if changed:
+        delegate._p_changed = True
+    return changed
+
+
+def step_ldap_op_timeout(app):
+    """Set op_timeout on the servers of every LDAPUserFolder that has none."""
+    from Products.LDAPUserFolder.LDAPUserFolder import LDAPUserFolder
+    fixed = 0
+    for luf in _iter_records(app, b'LDAPUserFolder'):
+        if not isinstance(luf, LDAPUserFolder):
+            continue
+        path = '/'.join(luf.getPhysicalPath())
+        for server in set_ldap_op_timeout(luf):
+            print("  %s: %s://%s:%s op_timeout=%s" % (
+                path, server['protocol'], server['host'], server['port'],
+                server['op_timeout']))
+            fixed += 1
+    if not fixed:
+        print("  No LDAP servers without op_timeout")
+
+
 # --- Run all steps ---
 
 STEPS = [
@@ -807,6 +876,8 @@ STEPS = [
     ("Use rstk['name'] in templates and scripts", step_rstk_item_access),
     ("Use nocall:options/error_value in error templates", step_nocall_error_value),
     ("Remove .decode('utf-8') on request values in scripts", step_request_value_decode),
+    ("Replace test() in the root gw_macro", step_gw_macro_test),
+    ("Set op_timeout on LDAP servers", step_ldap_op_timeout),
 ]
 
 print("=" * 60)
