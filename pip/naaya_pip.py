@@ -339,13 +339,11 @@ def zeoserver(root, opts):
 
 
 def test_command(cfg, instance):
-    """naaya-testrunner for an instance, on the src/ packages installed in its venv."""
+    """naaya-testrunner for an instance, on all the develop packages installed in its venv."""
     root = cfg['site']['directory']
     opts = dict(instances(cfg))[instance]
     installed = {os.path.realpath(src) for src in venvs(cfg)[opts['venv']]['develop']}
-    src_dir = os.path.join(root, 'src')
-    paths = [os.path.join(src_dir, name) for name in sorted(os.listdir(src_dir))
-             if os.path.realpath(os.path.join(src_dir, name)) in installed]
+    paths = sorted(installed, key=lambda path: os.path.basename(path).lower())
     sys.stdout.write('env NAAYA_ZOPE_CONF=%s %s %s\n' % (
         os.path.join(root, 'parts', instance, 'etc', 'zope.conf'),
         os.path.join(root, opts['venv'], 'bin', 'naaya-testrunner'),
