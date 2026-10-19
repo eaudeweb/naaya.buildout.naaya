@@ -24,12 +24,15 @@ Steps:
   15. Remove .decode('utf-8') on request values in stored PythonScripts
   16. Replace test() in the root gw_macro with conditional expressions
   17. Set a 15 s op_timeout on LDAPUserFolder servers that have none
+  18. Switch portal_map to OpenLayers and delete the Yahoo and Bing engines
+  19. Delete the portlet_ymap (Yahoo map) portlet and its assignments
 
 After the commit every catalog is rebuilt (one commit per catalog), then the
 database is packed. '--reindex-only' skips the steps and only rebuilds and packs.
 """
 
 import io
+import os
 import re
 import sys
 import tokenize
@@ -843,7 +846,11 @@ def set_ldap_op_timeout(luf, timeout=LDAP_OP_TIMEOUT):
 
 def step_ldap_op_timeout(app):
     """Set op_timeout on the servers of every LDAPUserFolder that has none."""
-    from Products.LDAPUserFolder.LDAPUserFolder import LDAPUserFolder
+    try:
+        from Products.LDAPUserFolder.LDAPUserFolder import LDAPUserFolder
+    except ImportError:
+        print("  Products.LDAPUserFolder is not installed")
+        return
     fixed = 0
     for luf in _iter_records(app, b'LDAPUserFolder'):
         if not isinstance(luf, LDAPUserFolder):
@@ -856,6 +863,251 @@ def step_ldap_op_timeout(app):
             fixed += 1
     if not fixed:
         print("  No LDAP servers without op_timeout")
+
+
+# Map engine objects whose classes were removed from GeoMapTool
+REMOVED_MAP_ENGINES = ('engine_yahoo', 'engine_bing')
+
+
+def step_map_engines(app):
+    """Set current_engine to openlayers on every portal_map and delete the Yahoo and Bing engines."""
+    fixed = 0
+    for site_id in app.objectIds():
+        site = app[site_id]
+        portal_map = getattr(aq_base(site), 'portal_map', None)
+        if getattr(portal_map, 'meta_type', None) != 'Naaya GeoMap Tool':
+            continue
+        portal_map = site.portal_map
+        base = aq_base(portal_map)
+        base._p_activate()
+        changes = []
+        # Remove broken engines from __dict__ without loading them
+        for engine_id in REMOVED_MAP_ENGINES:
+            if any(o['id'] == engine_id for o in base._objects):
+                base._objects = tuple(o for o in base._objects
+                                      if o['id'] != engine_id)
+                changes.append('%s removed from _objects' % engine_id)
+            if engine_id in base.__dict__:
+                delattr(base, engine_id)
+                changes.append('%s deleted' % engine_id)
+        old_engine = base.__dict__.get('current_engine')
+        has_openlayers = 'engine_openlayers' in base.__dict__
+        portal_map.set_map_engine('openlayers')
+        if old_engine != 'openlayers':
+            changes.append('current_engine %r -> openlayers' % old_engine)
+        if not has_openlayers:
+            changes.append('engine_openlayers created')
+        for line in changes:
+            print("  %s/portal_map: %s" % (site_id, line))
+        fixed += bool(changes)
+    if not fixed:
+        print("  All portal_map tools already use openlayers")
+
+
+def _remove_portlet_id(container, portlet_id):
+    """Remove portlet_id from a list, or from the lists in a dict; return the count."""
+    removed = 0
+    lists = container.values() if hasattr(container, 'values') else [container]
+    for ids in lists:
+        while portlet_id in ids:
+            ids.remove(portlet_id)
+            removed += 1
+    if removed and hasattr(container, '_p_changed'):
+        container._p_changed = True  # plain lists inside a PersistentMapping
+    return removed
+
+
+def step_delete_ymap_portlet(app, portlet_id='portlet_ymap'):
+    """Delete the portlet_ymap portlet (Yahoo map) and its left/center/right assignments."""
+    fixed = 0
+    for site_id in app.objectIds():
+        site = app[site_id]
+        portlets = getattr(aq_base(site), 'portal_portlets', None)
+        if portlets is None or not hasattr(portlets, 'objectIds'):
+            continue
+        portlets = site.portal_portlets
+        if portlet_id in portlets.objectIds():
+            portlets.manage_delObjects([portlet_id])
+            print("  Deleted %s/portal_portlets/%s" % (site_id, portlet_id))
+            fixed += 1
+        layout = aq_base(portlets).__dict__.get('_portlet_layout', {})
+        for (folder_path, position), items in layout.items():
+            kept = [i for i in items if i['id'] != portlet_id]
+            if len(kept) != len(items):
+                items[:] = kept
+                portlets._p_changed = True
+                print("  %s: unassigned from %r at %r" % (site_id, position, folder_path))
+                fixed += 1
+        # Assignments kept on the site by the old portlets_manager
+        for name in ('left_portlets_ids', 'center_portlets_ids', 'right_portlets_locations'):
+            ids = aq_base(site).__dict__.get('_portlets_manager__' + name)
+            if ids is not None and _remove_portlet_id(ids, portlet_id):
+                site._p_changed = True
+                print("  %s: removed from %s" % (site_id, name))
+                fixed += 1
+    if not fixed:
+        print("  No %s portlets" % portlet_id)
+
+
+def step_map_symbol_ids(app):
+    """Rename map symbols whose id is a file path (naaya.content.meeting install) to the file name."""
+    fixed = 0
+    for site_id in app.objectIds():
+        site = app[site_id]
+        portal_map = getattr(aq_base(site), 'portal_map', None)
+        symbols = getattr(portal_map, '_symbols_tool__symbol_collection', None)
+        if not symbols:
+            continue
+        renamed = {}
+        for old_id in [i for i in list(symbols) if '/' in i]:
+            new_id = base_id = old_id.rsplit('/', 1)[1]
+            n = 1
+            while new_id in symbols:
+                n += 1
+                new_id = '%s-%d' % (base_id, n)
+            symbol = symbols.pop(old_id)
+            symbol.id = new_id
+            symbols[new_id] = symbol
+            renamed[old_id] = new_id
+        if not renamed:
+            continue
+        portal_map._p_changed = True
+        for symbol in symbols.values():
+            if symbol.parent in renamed:
+                symbol.parent = renamed[symbol.parent]
+        catalog = site.getCatalogTool()
+        for old_id, new_id in renamed.items():
+            count = 0
+            for brain in catalog(geo_type=old_id):
+                ob = brain.getObject()
+                ob.geo_type = new_id
+                site.recatalogNyObject(ob)
+                count += 1
+            print("  %s: symbol %s -> %s, %d objects" % (site_id, old_id, new_id, count))
+            fixed += 1
+    if not fixed:
+        print("  No map symbols with a path id")
+
+
+def step_destinet_geomaptool_js(app):
+    """Replace demo-design/portal_map/geomaptool.js with the copy in NaayaBundles-DESTINET."""
+    try:
+        import naayabundles_destinet
+    except ImportError:
+        print("  NaayaBundles-DESTINET is not installed")
+        return
+    site = app._getOb('demo-design', None)
+    portal_map = getattr(aq_base(site), 'portal_map', None) if site is not None else None
+    if portal_map is None or 'geomaptool.js' not in portal_map.objectIds():
+        print("  No demo-design/portal_map/geomaptool.js")
+        return
+    path = os.path.join(os.path.dirname(naayabundles_destinet.__file__),
+                        'DESTINET-demo-design.bundle', 'portal_map', 'geomaptool.js')
+    with open(path, 'rb') as f:
+        data = f.read()
+    ob = site.portal_map._getOb('geomaptool.js')
+    if bytes(ob.data) == data:
+        print("  geomaptool.js already up to date")
+        return
+    ob.update_data(data, 'application/javascript')
+    print("  Updated demo-design/portal_map/geomaptool.js from %s" % path)
+
+
+DATA_IMAGE_RE = re.compile(
+    r"""src=(["'])data:image/(png|jpe?g|gif|webp|svg\+xml);base64,([A-Za-z0-9+/=\s]+)\1""")
+IMAGE_EXT = {'png': 'png', 'jpeg': 'jpg', 'jpg': 'jpg', 'gif': 'gif',
+             'webp': 'webp', 'svg+xml': 'svg'}
+
+
+def _extract_data_images(text, images, created, name):
+    """Return text with base64 src images saved in images as <name>-<n>.<ext> and linked as /images/<id>."""
+    import base64
+    import hashlib
+    from naaya.core.blobofs import manage_addBlobImage
+
+    def replace(match):
+        quote, kind, data = match.groups()
+        try:
+            raw = base64.b64decode(re.sub(r'\s+', '', data), validate=True)
+        except ValueError:
+            return match.group(0)
+        digest = hashlib.sha1(raw).hexdigest()
+        image_id = created.get(digest)
+        if image_id is None:
+            n = 1
+            while '%s-%d.%s' % (name, n, IMAGE_EXT[kind]) in images.objectIds():
+                n += 1
+            image_id = '%s-%d.%s' % (name, n, IMAGE_EXT[kind])
+            manage_addBlobImage(images, image_id, raw, content_type='image/' + kind)
+            created[digest] = image_id
+        return 'src=%s/images/%s%s' % (quote, image_id, quote)
+    return DATA_IMAGE_RE.sub(replace, text)
+
+
+def _image_name(ob):
+    """Image name base from the object id without leading numbering (1., 10.2-), else from the title."""
+    numbering = r'^(?:\d{1,3}[\W_]+)+'
+    name = re.sub(numbering, '', ob.getId())
+    if not name or name.isdigit():
+        title = ob.title_or_id() if hasattr(ob, 'title_or_id') else ''
+        name = re.sub(r'[^a-z0-9]+', '-', str(title).lower()).strip('-')
+        name = re.sub(numbering, '', name)
+    if not name or name.isdigit():
+        return 'image'
+    return name
+
+
+def step_extract_data_images(app):
+    """Move base64 images from content text to the site images folder (links /images/<id>, for sites at the domain root)."""
+    fixed = 0
+    for site_id in app.objectIds():
+        site = app[site_id]
+        if getattr(aq_base(site), 'portal_catalog', None) is None:
+            continue
+        images = site._getOb('images', None)
+        if images is None:
+            continue
+        created, objects = {}, 0
+        # paths first: recataloging while iterating the results skips objects
+        paths = [brain.getPath() for brain in site.portal_catalog(path='/' + site_id)]
+        for path in paths:
+            ob = app.unrestrictedTraverse(path, None)
+            if ob is None:
+                continue
+            base = aq_base(ob)
+            # Saving a large blob makes a savepoint, which can ghost this object:
+            # compute the new values first, then write them on the reloaded object
+            prop_updates, attr_updates = [], []
+            for name, langs in list(getattr(base, '_local_properties', {}).items()):
+                for lang, value in list(langs.items()):
+                    text = value[0] if isinstance(value, tuple) else value
+                    if not isinstance(text, str) or 'data:image/' not in text:
+                        continue
+                    new = _extract_data_images(text, images, created, _image_name(ob))
+                    if new != text:
+                        new = (new,) + value[1:] if isinstance(value, tuple) else new
+                        prop_updates.append((name, lang, new))
+            base._p_activate()  # a ghost has an empty __dict__
+            for name, text in list(base.__dict__.items()):
+                if isinstance(text, str) and 'data:image/' in text:
+                    new = _extract_data_images(text, images, created, _image_name(ob))
+                    if new != text:
+                        attr_updates.append((name, new))
+            if prop_updates or attr_updates:
+                for name, lang, value in prop_updates:
+                    base._local_properties[name][lang] = value
+                for name, value in attr_updates:
+                    setattr(base, name, value)
+                base._p_changed = True
+                site.recatalogNyObject(ob)
+                objects += 1
+                if objects % 20 == 0:
+                    transaction.savepoint(True)
+        if objects:
+            print("  %s: %d objects, %d images added to /images" % (site_id, objects, len(created)))
+            fixed += 1
+    if not fixed:
+        print("  No base64 images in content")
 
 
 # --- Run all steps ---
@@ -878,6 +1130,11 @@ STEPS = [
     ("Remove .decode('utf-8') on request values in scripts", step_request_value_decode),
     ("Replace test() in the root gw_macro", step_gw_macro_test),
     ("Set op_timeout on LDAP servers", step_ldap_op_timeout),
+    ("Switch portal_map to OpenLayers, delete Yahoo/Bing engines", step_map_engines),
+    ("Delete the portlet_ymap portlet", step_delete_ymap_portlet),
+    ("Rename map symbols with a file path id", step_map_symbol_ids),
+    ("Update the destinet portal_map/geomaptool.js", step_destinet_geomaptool_js),
+    ("Move base64 images from content to /images", step_extract_data_images),
 ]
 
 print("=" * 60)
