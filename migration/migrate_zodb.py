@@ -1110,6 +1110,85 @@ def step_extract_data_images(app):
         print("  No base64 images in content")
 
 
+SHH_HEADER = re.compile(
+    r'<(?:[a-z]+:block|span|div)\b[^>]*?(?:tal:)?(?:replace|content)='
+    r'"structure (?:here|context)/standard_html_header"[^>]*?/>')
+SHH_FOOTER = re.compile(
+    r'<(?:[a-z]+:block|span|div)\b[^>]*?(?:tal:)?(?:replace|content)='
+    r'"structure (?:here|context)/standard_html_footer"[^>]*?/>')
+SHH_DTML_HEADER = re.compile(r'<dtml-var\s+standard_html_header\s*>[ \t]*\n?')
+SHH_DTML_FOOTER = re.compile(r'<dtml-var\s+standard_html_footer\s*>[ \t]*\n?')
+SHH_OPEN = ('<metal:block use-macro="here/standard_template_macro">'
+            '<metal:block fill-slot="body">')
+SHH_CLOSE = '</metal:block></metal:block>'
+
+
+def _walk_objects(container):
+    """Yield (container, id, object) for every object below container."""
+    for ob_id, ob in container.objectItems():
+        yield container, ob_id, ob
+        if (hasattr(aq_base(ob), 'objectItems')
+                and getattr(ob, 'meta_type', '') != 'ZCatalog'):
+            yield from _walk_objects(ob)
+
+
+def step_standard_template_macro(app):
+    """Replace standard_html_header/footer with standard_template_macro."""
+    # DTML pages become a page template rendering the DTML (<id>_body) in the
+    # macro; outside the Naaya sites the two calls are only removed
+    from OFS.DTMLMethod import DTMLMethod, addDTMLMethod
+    from OFS.DTMLDocument import addDTMLDocument
+    from OFS.DTMLDocument import DTMLDocument
+    from Products.PageTemplates.PageTemplate import PageTemplate
+    from Products.PageTemplates.ZopePageTemplate import (
+        manage_addPageTemplate)
+    from Products.Naaya.NySite import NySite
+    fixed = []
+    for container, ob_id, ob in list(_walk_objects(app)):
+        in_site = any(isinstance(aq_base(parent), NySite)
+                      for parent in container.aq_chain)
+        if isinstance(aq_base(ob), PageTemplate):
+            text = ob._text
+            headers, footers = SHH_HEADER.findall(text), SHH_FOOTER.findall(text)
+            if not headers and not footers:
+                continue
+            if len(headers) != 1 or len(footers) != 1:
+                print("  SKIPPED, %d headers and %d footers: %s" % (
+                    len(headers), len(footers), '/'.join(ob.getPhysicalPath())))
+                continue
+            if in_site:
+                h, f = SHH_HEADER.search(text), SHH_FOOTER.search(text)
+                text = (text[:h.start()] + SHH_OPEN + text[h.end():f.start()] +
+                        SHH_CLOSE + text[f.end():])
+            else:
+                text = SHH_FOOTER.sub('', SHH_HEADER.sub('', text))
+            ob.pt_edit(text, ob.content_type)
+            fixed.append(ob)
+        elif isinstance(aq_base(ob), DTMLMethod):
+            text = ob.read()
+            if not (SHH_DTML_HEADER.search(text) or SHH_DTML_FOOTER.search(text)):
+                continue
+            body = SHH_DTML_FOOTER.sub('', SHH_DTML_HEADER.sub('', text))
+            if not in_site:
+                ob.manage_edit(body, ob.title)
+                fixed.append(ob)
+                continue
+            body_id = ob_id + '_body'
+            title = ob.title
+            add = (addDTMLDocument if isinstance(aq_base(ob), DTMLDocument)
+                   else addDTMLMethod)
+            container._delObject(ob_id)
+            add(container, body_id, title, body)
+            manage_addPageTemplate(container, ob_id, title, (
+                SHH_OPEN + '\n<tal:block replace="structure python:'
+                'here[%r](here, request)" />\n' % body_id + SHH_CLOSE + '\n'))
+            fixed.append(container._getOb(ob_id))
+    for ob in fixed:
+        print("  %s" % '/'.join(ob.getPhysicalPath()))
+    if not fixed:
+        print("  No templates with standard_html_header/footer")
+
+
 # --- Run all steps ---
 
 STEPS = [
@@ -1135,6 +1214,8 @@ STEPS = [
     ("Rename map symbols with a file path id", step_map_symbol_ids),
     ("Update the destinet portal_map/geomaptool.js", step_destinet_geomaptool_js),
     ("Move base64 images from content to /images", step_extract_data_images),
+    ("Use standard_template_macro instead of standard_html_header/footer",
+     step_standard_template_macro),
 ]
 
 print("=" * 60)
