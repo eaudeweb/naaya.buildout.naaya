@@ -1,7 +1,7 @@
 # Python 2 to Python 3 Data.fs migration; include it after setting INSTANCE and DATAFS
 MIGRATION := $(dir $(lastword $(MAKEFILE_LIST)))
 
-.PHONY: migrate
+.PHONY: migrate reindex
 
 migrate:
 	@echo "=== Migrating $(DATAFS) with $(INSTANCE) ==="
@@ -30,3 +30,8 @@ migrate:
 	if [ -n "$$ZEO" ]; then bin/zeoserver stop; fi; \
 	exit $$STATUS
 	@echo "=== Migration complete ==="
+
+# Rebuild the catalogs of an already migrated Data.fs (e.g. after indexing changes)
+reindex:
+	parts/$(INSTANCE)/bin/interpreter -m Zope2.utilities.zconsole run \
+	    parts/$(INSTANCE)/etc/zope-migrate.conf $(MIGRATION)migrate_zodb.py --reindex-only
