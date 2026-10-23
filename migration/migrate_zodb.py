@@ -100,13 +100,12 @@ def step_fix_pas_cookie(app):
     plugins = pas.plugins
 
     # Record which interfaces the old plugin was active for
+    # (from the registry: listPlugins skips the broken Plone plugin)
     active_for = []
     for iface in [ICredentialsUpdatePlugin, ICredentialsResetPlugin,
                   IExtractionPlugin, IChallengePlugin]:
-        active = [id for id, p in plugins.listPlugins(iface)]
-        if 'credentials_cookie_auth' in active:
+        if 'credentials_cookie_auth' in plugins._plugins.get(iface, ()):
             active_for.append(iface)
-            plugins.deactivatePlugin(iface, 'credentials_cookie_auth')
 
     # Preserve settings
     cookie_name = getattr(old, 'cookie_name', '__ac')
