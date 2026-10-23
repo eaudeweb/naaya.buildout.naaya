@@ -1,0 +1,13 @@
+# Build context is the site directory: no local installs, data or secrets in the image
+.git
+.venv*
+bin
+parts
+var
+haproxy.cfg
+secret.cfg
+local.cfg
+requirements*.txt
+constraints*.txt
+docker-compose.yml
+**/__pycache__

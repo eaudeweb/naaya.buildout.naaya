@@ -6,7 +6,7 @@ FIND_LINKS ?= https://eggshop.eaudeweb.ro
 GEN_PYTHON = $(firstword $(wildcard .venv/bin/python .venv-*/bin/python) $(PYTHON))
 NAAYA_PIP_CMD = $(GEN_PYTHON) $(NAAYA_PIP)naaya_pip.py site.cfg
 
-.PHONY: install requirements packages config haproxy test
+.PHONY: install requirements packages config haproxy test image compose
 
 install: requirements packages config
 
@@ -43,3 +43,11 @@ TEST_ARGS ?= -p
 test:
 	@test -n "$(INSTANCE)" || { echo "Usage: make test INSTANCE=<name> [TEST_ARGS=...]" >&2; exit 1; }
 	$$($(NAAYA_PIP_CMD) test-command $(INSTANCE)) $(TEST_ARGS)
+
+# Docker: image naaya-<site directory> and docker-compose.yml (run make bootstrap first)
+image:
+	docker build -f $(NAAYA_PIP)Dockerfile -t naaya-$(shell basename $(CURDIR) | tr A-Z a-z) \
+	    --build-arg UID=$$(stat -c %u .) --build-arg GID=$$(stat -c %g .) .
+
+compose:
+	$(NAAYA_PIP_CMD) compose
