@@ -22,10 +22,11 @@ FROM python:3.14-slim-trixie
 ARG UID=500
 ARG GID=500
 
-# ffmpeg: media files, pdftotext and catdoc: full-text index, Pango: WeasyPrint
+# ffmpeg: media files, pdftotext and catdoc: full-text index, Pango and HarfBuzz: WeasyPrint
 RUN apt-get update \
     && apt-get install -y --no-install-recommends make haproxy ffmpeg \
-        poppler-utils catdoc libpango-1.0-0 libpangoft2-1.0-0 libldap2 libsasl2-2 \
+        poppler-utils catdoc libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
+        libldap2 libsasl2-2 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g $GID zope && useradd -u $UID -g $GID -m zope
 
